@@ -15,7 +15,7 @@ app.use(express.json());
 let users = [];
 let posts = [];
 
-const openApiSpec = fs.readFileSync(path.resolve(__dirname, 'openapi.yaml'), 'utf8');
+const openApiSpec = fs.readFileSync(path.resolve(__dirname, '..', 'openapi.yaml'), 'utf8');
 const openApiDefinition = yaml.load(openApiSpec);
 
 const options = {
@@ -86,7 +86,7 @@ app.patch('/posts/:postId', (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3002;
 app.listen(PORT, () => {
-  console.log(`server running on port ${PORT}`);
+  console.log(`Server running on http://localhost:${PORT}`);
 });

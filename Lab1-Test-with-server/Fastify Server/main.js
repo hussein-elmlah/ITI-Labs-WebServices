@@ -1,6 +1,6 @@
 import fastify from 'fastify';
+import swagger from '@fastify/swagger';
 import swaggerJSDoc from 'swagger-jsdoc';
-import fastifySwagger from 'fastify-swagger';
 import { fileURLToPath } from 'url';
 import path, { dirname } from 'path';
 import fs from 'fs';
@@ -22,19 +22,23 @@ const options = {
 };
 
 // Initialize Swagger
-const swagger = swaggerJSDoc(options);
+const mySwagger = swaggerJSDoc(options);
 
 // Register Fastify Swagger plugin
-app.register(fastifySwagger, {
+app.register(swagger, {
+  routePrefix: '/docs',
+  exposeRoute: true,
   swagger: {
     info: {
       title: 'Lab1 API',
       description: 'REST API for managing users and their posts',
       version: '1.0.0',
     },
-    ...swagger,
+    servers: [{ url: 'http://localhost:3000', description: 'Local development server' }],
+    schemes: ['http'],
+    consumes: ['application/json'],
+    produces: ['application/json'],
   },
-  exposeRoute: true,
 });
 
 // Define your API routes here
@@ -43,11 +47,11 @@ app.get('/users', (req, res) => {
 });
 
 // Start the server
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, (err, address) => {
+const PORT = process.env.PORT || 3004;
+app.listen(PORT, '0.0.0.0', (err) => {
   if (err) {
     console.error(err);
     process.exit(1);
   }
-  console.log(`Server listening on ${address}`);
+  console.log(`Server running on http://localhost:${PORT}`);
 });
