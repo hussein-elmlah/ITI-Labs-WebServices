@@ -2,24 +2,39 @@ const { ApolloServer, gql } = require("apollo-server");
 const { GraphQLError } = require("graphql");
 const jwt = require('jsonwebtoken');
 const bcrypt = require("bcrypt");
+const mysql = require('mysql2/promise');
 
-const axios = require('axios').default;
-
-const usersDB = [];
-
-const restApi = axios.create({
-  baseURL: "http://localhost:3000/",
-  timeout: 10000,
-  headers: {
-    "X-Token": "token",
-  }
+const pool = mysql.createPool({
+  host: 'localhost',
+  user: 'root',
+  password: 'hussein',
+  database: 'web_services_lab2',
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
 });
 
+const getUsersFromDatabase = async (page, count) => {
+  const offset = (page - 1) * count;
+  const [rows] = await pool.query('SELECT * FROM users LIMIT ?, ?', [offset, count]);
+  return rows;
+};
 
-// root types: entrypoint for our operations/query
-// Query root type
-// scalar types: Int, String, Boolean, Float, ID
-// special root types: Query, Mutation
+const getUserByIdFromDatabase = async (userId) => {
+  const [rows] = await pool.query('SELECT * FROM users WHERE id = ?', [userId]);
+  return rows[0];
+};
+
+const registerUserInDatabase = async (user) => {
+  const hashedPassword = await bcrypt.hash(user.password, 12);
+  const [result] = await pool.query('INSERT INTO users (email, name, password) VALUES (?, ?, ?)', [user.email, user.name, hashedPassword]);
+
+  if (result.affectedRows === 1) {
+    return { isSuccess: true, message: "User registered successfully" };
+  } else {
+    return { isSuccess: false, message: "Failed to register user" };
+  }
+};
 
 const typeDefs = gql`
   type User {
@@ -86,104 +101,114 @@ const typeDefs = gql`
       password: String!
     ): LoginResult
   }
-`
+`;
+
 const loginResolver = async (parent, args) => {
   const { email, password } = args;
-  const user = usersDB.find((user) => user.email === email);
-  if (!user) throw new Error("Invalid Credentials");
-  const isPasswordMatch = await bcrypt.compare(password, user.password);
-  if (!isPasswordMatch) throw new Error("Invalid Credentials");
 
-  const userToken = jwt.sign(
-    { email: user.email },
-    process.env.JWT_SECRET,
-    { expiresIn: '1d' },
-  )
-  
-  return {
-    isSuccess: true,
-    message: "login succeeded",
-    token: userToken,
+  try {
+    const [rows] = await pool.query('SELECT * FROM users WHERE email = ?', [email]);
+    
+    if (!rows[0]) {
+      throw new Error("Invalid Credentials");
+    }
+    
+    const isPasswordMatch = await bcrypt.compare(password, rows[0].password);
+    
+    if (!isPasswordMatch) {
+      throw new Error("Invalid Credentials");
+    }
+    
+    const userToken = jwt.sign(
+      { email: rows[0].email },
+      process.env.JWT_SECRET,
+      { expiresIn: '1d' }
+    );
+    
+    return {
+      isSuccess: true,
+      message: "Login succeeded",
+      token: userToken,
+    };
+  } catch (error) {
+    console.error("Error logging in user:", error);
+    throw new Error("Failed to login user");
   }
+};
 
-
-}
-
-const registerUserResolver = async (parent, user) => {
-  const isDuplicateUser = !!usersDB
-    .find(({ email }) => user.email === email);
-  console.log(usersDB);
-  if (isDuplicateUser) {
-    throw new GraphQLError("the email you entered is duplicate", {
-      extensions: { code: "DUPLICATE_EMAIL" }
-    })
+const registerUserResolver = async (parent, { email, name, password }) => {
+  try {
+    const user = { email, name, password };
+    const result = await registerUserInDatabase(user);
+    return result;
+  } catch (error) {
+    console.error("Error registering user:", error);
+    throw new Error("Failed to register user");
   }
-  const userDoc = {
-    ...user,
-    password: await bcrypt.hash(user.password, 12),
-  }
-
-  usersDB.push(userDoc);
-  console.log(usersDB);
-  return { isSuccess: true, message: "User registered successfully" };
-}
+};
 
 const resolvers = {
-  User: {
-    posts: async (parent, args) => {
-      const { data: userPosts } = await restApi
-        .get(`/users/${parent.id}/posts?_limit=${args.last}`);
-      return userPosts;
-    }
+  Query: {
+    helloworld: () => "Hello, world!",
+    profile: () => {
+      return {};
+    },
+    getPosts: () => {
+      return [];
+    },
+    getUsers: async (parent, args, context) => {
+      const { pagination: { page, count } } = args;
+
+      if (!context.loggedUser?.email) {
+        throw new Error("UNAUTHORIZED");
+      }
+
+      try {
+        const users = await getUsersFromDatabase(page, count);
+        return users;
+      } catch (error) {
+        console.error("Error fetching users:", error);
+        throw new Error("Failed to fetch users from database");
+      }
+    },
+    getUserByID: async (parent, args) => {
+      const { userId } = args;
+
+      try {
+        const user = await getUserByIdFromDatabase(userId);
+        return user;
+      } catch (error) {
+        console.error("Error fetching user:", error);
+        throw new Error("Failed to fetch user from database");
+      }
+    },
   },
   Mutation: {
     register: registerUserResolver,
     login: loginResolver,
   },
-  Query: {
-    profile: () => {
-      return {};
-      return { name: "ahmed", email: "test@sedfsd.com" }
-    },
-    getUsers: async (parent, args, context) => {
-      const { pagination: { page, count } } = args;
+};
 
-      if(!context.loggedUser?.email) {
-        throw new Error("UNAUTHORIZED");
-      }
-      
-      const { data: users } = await restApi
-        .get(`/users?_limit=${count}&_page=${page}`);
-
-      return users;
-    },
-    getUserByID: async (parent, args) => {
-      const { userId } = args;
-      
-      const { data: user } = await restApi
-        .get(`/users/${userId}`);
-
-      return user;
-    }
-  }
-}
-
-const app = new ApolloServer({
-  context: async (ctx) => {
+const server = new ApolloServer({
+  typeDefs,
+  resolvers,
+  context: async ({ req }) => {
     let loggedUser = null;
-    const token = ctx.req.headers["authorization"];
-    try {
-      const payload = jwt.verify(token, process.env.JWT_SECRET);
-      loggedUser = payload;
-    } catch (error) {
-      console.error(error);
+    const token = req.headers.authorization || '';
+
+    if (token) {
+      try {
+        const payload = jwt.verify(token, process.env.JWT_SECRET);
+        loggedUser = payload;
+      } catch (error) {
+        console.error("Error verifying token:", error);
+      }
     }
 
     return { loggedUser };
   },
-  typeDefs,
-  resolvers,
 });
 
-app.listen(3001)
- .then(() => console.log("server started"));
+server.listen(3001).then(({ url }) => {
+  console.log(`Server ready at ${url}`);
+});
